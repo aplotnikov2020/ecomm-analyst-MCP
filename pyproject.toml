@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ecomm-analyst-mcp"
+version = "0.1.0"
+description = "WhatsApp Product Analysis Agent with MCP connections hosted on GCP Cloud Run"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "mcp_servers*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

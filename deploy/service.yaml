@@ -1,0 +1,66 @@
+# Cloud Run service manifest
+# Deploy with: gcloud run services replace deploy/service.yaml --region=us-central1
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: whatsapp-product-analyst
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"   # keep warm for MCP startup
+        autoscaling.knative.dev/maxScale: "10"
+        run.googleapis.com/cpu-throttling: "false"  # always-on CPU for subprocess MCP servers
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      serviceAccountName: whatsapp-analyst-sa@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: gcr.io/PROJECT_ID/whatsapp-product-analyst:latest
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          env:
+            - name: GCP_PROJECT_ID
+              value: "PROJECT_ID"
+            - name: FIRESTORE_COLLECTION
+              value: "conversations"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: WHATSAPP_PHONE_NUMBER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: whatsapp-phone-number-id
+                  key: latest
+            - name: WHATSAPP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: whatsapp-token
+                  key: latest
+            - name: WHATSAPP_VERIFY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: whatsapp-verify-token
+                  key: latest
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-key
+                  key: latest
+          livenessProbe:
+            httpGet:
+              path: /health
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+            initialDelaySeconds: 10
+            periodSeconds: 5

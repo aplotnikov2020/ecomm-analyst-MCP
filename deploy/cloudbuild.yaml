@@ -1,0 +1,57 @@
+# Cloud Build — build Docker image and deploy to Cloud Run
+#
+# Trigger: push to main branch
+# Required substitutions: _SERVICE, _REGION, _PROJECT_ID
+
+substitutions:
+  _SERVICE: whatsapp-product-analyst
+  _REGION: us-central1
+  _PROJECT_ID: ${PROJECT_ID}
+  _IMAGE: gcr.io/${_PROJECT_ID}/${_SERVICE}
+
+steps:
+  # Build the container image
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - build
+      - -t
+      - ${_IMAGE}:${SHORT_SHA}
+      - -t
+      - ${_IMAGE}:latest
+      - -f
+      - deploy/Dockerfile
+      - .
+
+  # Push image to Container Registry
+  - name: "gcr.io/cloud-builders/docker"
+    args: [push, ${_IMAGE}:${SHORT_SHA}]
+
+  - name: "gcr.io/cloud-builders/docker"
+    args: [push, ${_IMAGE}:latest]
+
+  # Deploy to Cloud Run
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_IMAGE}:${SHORT_SHA}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --min-instances=1
+      - --max-instances=10
+      - --memory=2Gi
+      - --cpu=2
+      - --timeout=300
+      - --concurrency=80
+      - --set-secrets=WHATSAPP_TOKEN=whatsapp-token:latest,ANTHROPIC_API_KEY=anthropic-key:latest
+      - --set-env-vars=GCP_PROJECT_ID=${_PROJECT_ID},WHATSAPP_PHONE_NUMBER_ID=${_PHONE_NUMBER_ID}
+
+images:
+  - ${_IMAGE}:${SHORT_SHA}
+  - ${_IMAGE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
