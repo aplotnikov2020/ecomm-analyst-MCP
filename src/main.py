@@ -57,7 +57,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "service": "whatsapp-product-analysis-agent",
-        "model": settings.anthropic_model,
+        "model": settings.openrouter_model,
         "mcp_servers": ["ecomm", "trends", "market"],
     }
 

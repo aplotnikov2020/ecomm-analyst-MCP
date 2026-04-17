@@ -14,9 +14,10 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str = "default_verify_token"
     whatsapp_api_version: str = "v21.0"
 
-    # Anthropic
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-opus-4-7"
+    # OpenRouter
+    openrouter_api_key: str = ""
+    openrouter_model: str = "anthropic/claude-opus-4"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # GCP
     gcp_project_id: str = ""

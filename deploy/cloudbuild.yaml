@@ -46,7 +46,7 @@ steps:
       - --cpu=2
       - --timeout=300
       - --concurrency=80
-      - --set-secrets=WHATSAPP_TOKEN=whatsapp-token:latest,ANTHROPIC_API_KEY=anthropic-key:latest
+      - --set-secrets=WHATSAPP_TOKEN=whatsapp-token:latest,OPENROUTER_API_KEY=openrouter-key:latest
       - --set-env-vars=GCP_PROJECT_ID=${_PROJECT_ID},WHATSAPP_PHONE_NUMBER_ID=${_PHONE_NUMBER_ID}
 
 images:

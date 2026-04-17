@@ -49,10 +49,10 @@ spec:
                 secretKeyRef:
                   name: whatsapp-verify-token
                   key: latest
-            - name: ANTHROPIC_API_KEY
+            - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: anthropic-key
+                  name: openrouter-key
                   key: latest
           livenessProbe:
             httpGet:

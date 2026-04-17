@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from src.media.image import encode_image_for_claude, detect_mime_from_bytes
+from src.media.image import encode_image_for_openai, detect_mime_from_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -12,15 +12,14 @@ from src.media.image import encode_image_for_claude, detect_mime_from_bytes
 def test_encode_image_valid_jpeg():
     # Minimal valid JPEG magic bytes padded to >0 bytes
     fake_jpeg = b"\xff\xd8\xff" + b"\x00" * 100
-    block = encode_image_for_claude(fake_jpeg, "image/jpeg")
+    block = encode_image_for_openai(fake_jpeg, "image/jpeg")
     assert block is not None
-    assert block["type"] == "image"
-    assert block["source"]["type"] == "base64"
-    assert block["source"]["media_type"] == "image/jpeg"
+    assert block["type"] == "image_url"
+    assert block["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
 def test_encode_image_empty_returns_none():
-    block = encode_image_for_claude(b"", "image/jpeg")
+    block = encode_image_for_openai(b"", "image/jpeg")
     assert block is None
 
 

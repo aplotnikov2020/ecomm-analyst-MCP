@@ -1,6 +1,6 @@
 # WhatsApp Product Analysis Agent
 
-An AI-powered e-commerce analyst available on WhatsApp. Send a product photo, voice note, or text message and receive demand forecasts, supply assessments, trend analysis, and market opportunities — all driven by Claude Opus 4.7 and a set of specialised MCP data servers.
+An AI-powered e-commerce analyst available on WhatsApp. Send a product photo, voice note, or text message and receive demand forecasts, supply assessments, trend analysis, and market opportunities — all driven by an LLM via OpenRouter and a set of specialised MCP data servers.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ FastAPI App  (GCP Cloud Run)
      ├─► Claude Vision                 (product photo → identification)
      │
      ▼
-Claude Opus 4.7  (adaptive thinking + prompt caching)
+OpenRouter  (model: anthropic/claude-opus-4, OpenAI-compatible API)
      │  tool calls
      ├─► MCP: ecomm-server    — sales, inventory, demand forecast
      ├─► MCP: trends-server   — Google Trends, seasonality
@@ -80,7 +80,7 @@ ecomm-analyst-MCP/
 - GCP project with the following APIs enabled:
   - Cloud Run, Cloud Build, Cloud Speech-to-Text, Cloud Storage, Firestore
 - [WhatsApp Business account](https://developers.facebook.com/docs/whatsapp/cloud-api/get-started) with Cloud API access
-- Anthropic API key
+- [OpenRouter API key](https://openrouter.ai/)
 
 ## Local Development
 
@@ -125,7 +125,7 @@ pytest tests/ -v
 echo -n "$WHATSAPP_TOKEN"        | gcloud secrets create whatsapp-token --data-file=-
 echo -n "$WHATSAPP_VERIFY_TOKEN" | gcloud secrets create whatsapp-verify-token --data-file=-
 echo -n "$WHATSAPP_PHONE_ID"     | gcloud secrets create whatsapp-phone-number-id --data-file=-
-echo -n "$ANTHROPIC_API_KEY"     | gcloud secrets create anthropic-key --data-file=-
+echo -n "$OPENROUTER_API_KEY"    | gcloud secrets create openrouter-key --data-file=-
 ```
 
 ### 2. Grant the service account access
@@ -192,11 +192,12 @@ async def get_sales_data(product_id: str, months: int = 12) -> str:
 | `WHATSAPP_TOKEN` | ✅ | Meta WhatsApp Cloud API access token |
 | `WHATSAPP_PHONE_NUMBER_ID` | ✅ | WhatsApp phone number ID |
 | `WHATSAPP_VERIFY_TOKEN` | ✅ | Webhook verification token (any string you choose) |
-| `ANTHROPIC_API_KEY` | ✅ | Anthropic API key |
+| `OPENROUTER_API_KEY` | ✅ | OpenRouter API key |
 | `GCP_PROJECT_ID` | ✅ | GCP project ID |
 | `GCS_BUCKET_NAME` | ✅ | Cloud Storage bucket for media |
 | `FIRESTORE_COLLECTION` | | Firestore collection name (default: `conversations`) |
-| `ANTHROPIC_MODEL` | | Claude model ID (default: `claude-opus-4-7`) |
+| `OPENROUTER_MODEL` | | Model ID (default: `anthropic/claude-opus-4`) |
+| `OPENROUTER_BASE_URL` | | OpenRouter base URL (default: `https://openrouter.ai/api/v1`) |
 | `CONVERSATION_TTL_HOURS` | | History retention (default: `24`) |
 | `MAX_CONVERSATION_TURNS` | | Max turns in context (default: `20`) |
 | `MAX_TOOL_ITERATIONS` | | Agent tool call limit per message (default: `10`) |

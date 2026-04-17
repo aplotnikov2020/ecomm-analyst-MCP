@@ -1,18 +1,17 @@
-"""Agent core — orchestrates Claude, MCP connections, and conversation state."""
+"""Agent core — orchestrates the LLM via OpenRouter, MCP connections, and conversation state."""
 
 import json
 import logging
-import sys
 from contextlib import AsyncExitStack
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-import anthropic
+import openai
 
 from src.agent.prompts import SYSTEM_PROMPT
 from src.config import settings
 from src.media.audio import transcribe_audio
-from src.media.image import detect_mime_from_bytes, encode_image_for_claude
+from src.media.image import detect_mime_from_bytes, encode_image_for_openai
 from src.whatsapp.client import WhatsAppClient
 from src.whatsapp.webhook import IncomingMessage
 
@@ -26,16 +25,19 @@ MCP_SERVERS = {
 
 
 class AgentCore:
-    """Manages MCP connections, Claude conversations, and WhatsApp I/O."""
+    """Manages MCP connections, LLM conversations via OpenRouter, and WhatsApp I/O."""
 
     def __init__(self) -> None:
-        self._anthropic = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._openai = openai.AsyncOpenAI(
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url,
+        )
         self._wa = WhatsAppClient()
         self._exit_stack = AsyncExitStack()
         self._mcp_sessions: dict[str, Any] = {}
-        self._tool_registry: dict[str, Any] = {}  # tool_name -> mcp session
-        self._anthropic_tools: list[dict] = []
-        self._db: Any = None  # Firestore client (optional)
+        self._tool_registry: dict[str, Any] = {}
+        self._openai_tools: list[dict] = []
+        self._db: Any = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -48,7 +50,7 @@ class AgentCore:
         await self._build_tool_registry()
         self._init_firestore()
         logger.info(
-            f"Agent ready — {len(self._anthropic_tools)} tools across "
+            f"Agent ready — {len(self._openai_tools)} tools across "
             f"{len(self._mcp_sessions)} MCP servers"
         )
 
@@ -65,7 +67,6 @@ class AgentCore:
         """Process an incoming WhatsApp message end-to-end."""
         await self._wa.mark_read(msg.message_id)
 
-        # Build the user content block(s) for Claude
         user_content: list[dict] = []
 
         if msg.msg_type == "audio":
@@ -73,7 +74,6 @@ class AgentCore:
         elif msg.msg_type == "image":
             user_content = await self._handle_image(msg)
         else:
-            # Plain text
             user_content = [{"type": "text", "text": msg.text or ""}]
 
         if not user_content:
@@ -83,17 +83,14 @@ class AgentCore:
             )
             return
 
-        # Load conversation history
         history = await self._load_history(msg.from_number)
 
-        # Run the agentic loop
         try:
             reply = await self._run_agent(user_content, history)
         except Exception as exc:
             logger.error(f"Agent error for {msg.from_number}: {exc}", exc_info=True)
             reply = "⚠️ I encountered an error while analysing your request. Please try again."
 
-        # Persist conversation and reply
         await self._save_history(msg.from_number, history, user_content, reply)
         await self._wa.send_text(msg.from_number, reply)
 
@@ -102,7 +99,6 @@ class AgentCore:
     # ------------------------------------------------------------------
 
     async def _handle_audio(self, msg: IncomingMessage) -> list[dict]:
-        """Download and transcribe audio; return text content block."""
         if not msg.media_id:
             return [{"type": "text", "text": "[audio message received but no media_id]"}]
 
@@ -114,11 +110,9 @@ class AgentCore:
         if transcript:
             return [{"type": "text", "text": f"[Voice message]: {transcript}"}]
 
-        # Transcription failed — ask user to type
         return []
 
     async def _handle_image(self, msg: IncomingMessage) -> list[dict]:
-        """Download image and build vision content block."""
         if not msg.media_id:
             return []
 
@@ -127,7 +121,7 @@ class AgentCore:
             return []
 
         mime = msg.mime_type or detect_mime_from_bytes(image_bytes)
-        image_block = encode_image_for_claude(image_bytes, mime)
+        image_block = encode_image_for_openai(image_bytes, mime)
         if not image_block:
             return []
 
@@ -148,65 +142,70 @@ class AgentCore:
     # ------------------------------------------------------------------
 
     async def _run_agent(self, user_content: list[dict], history: list[dict]) -> str:
-        """Run the Claude agentic loop with MCP tool use.
+        """Run the agentic loop with OpenRouter + MCP tool use."""
+        messages: list[dict] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *history,
+            {"role": "user", "content": user_content},
+        ]
 
-        Uses prompt caching on the system prompt and adaptive thinking
-        for complex multi-step analysis.
-        """
-        messages = history + [{"role": "user", "content": user_content}]
+        last_content: Optional[str] = None
 
-        for iteration in range(settings.max_tool_iterations):
-            response = await self._anthropic.messages.create(
-                model=settings.anthropic_model,
+        for _ in range(settings.max_tool_iterations):
+            response = await self._openai.chat.completions.create(
+                model=settings.openrouter_model,
                 max_tokens=4096,
-                thinking={"type": "adaptive"},
-                system=[
-                    {
-                        "type": "text",
-                        "text": SYSTEM_PROMPT,
-                        # Cache the system prompt across requests — it's large and stable
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                tools=self._anthropic_tools if self._anthropic_tools else [],
                 messages=messages,
+                tools=self._openai_tools if self._openai_tools else None,
             )
 
-            if response.stop_reason == "end_turn":
-                return self._extract_text(response.content)
+            choice = response.choices[0]
+            msg = choice.message
+            last_content = msg.content or ""
 
-            if response.stop_reason == "tool_use":
-                # Execute all tool calls (Claude may request multiple in parallel)
-                tool_results = await self._execute_tools(response.content)
-                messages.append({"role": "assistant", "content": response.content})
-                messages.append({"role": "user", "content": tool_results})
+            if choice.finish_reason == "stop":
+                return last_content
+
+            if choice.finish_reason == "tool_calls":
+                tool_calls = msg.tool_calls or []
+
+                # Append assistant turn with the tool_calls the model issued
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in tool_calls
+                    ],
+                })
+
+                # Execute each tool call and append result messages
+                for tc in tool_calls:
+                    tool_name = tc.function.name
+                    try:
+                        tool_input = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        tool_input = {}
+                    logger.info(f"Executing tool: {tool_name}({tc.function.arguments[:200]})")
+                    result_text = await self._call_mcp_tool(tool_name, tool_input)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result_text,
+                    })
                 continue
 
-            # Unexpected stop reason
-            logger.warning(f"Unexpected stop_reason: {response.stop_reason}")
-            return self._extract_text(response.content) or "Analysis complete."
+            logger.warning(f"Unexpected finish_reason: {choice.finish_reason}")
+            return last_content or "Analysis complete."
 
-        # Hit iteration limit — return whatever Claude said last
-        return self._extract_text(response.content) or "Analysis complete (tool limit reached)."
-
-    async def _execute_tools(self, content_blocks: list) -> list[dict]:
-        """Execute all tool_use blocks and return tool_result messages."""
-        results = []
-        for block in content_blocks:
-            if block.type != "tool_use":
-                continue
-            tool_name = block.name
-            tool_input = block.input
-
-            logger.info(f"Executing tool: {tool_name}({json.dumps(tool_input)[:200]})")
-
-            result_text = await self._call_mcp_tool(tool_name, tool_input)
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": result_text,
-            })
-        return results
+        return last_content or "Analysis complete (tool limit reached)."
 
     async def _call_mcp_tool(self, tool_name: str, tool_input: dict) -> str:
         """Route a tool call to the appropriate MCP server session."""
@@ -217,7 +216,6 @@ class AgentCore:
 
         try:
             result = await session.call_tool(tool_name, tool_input)
-            # MCP returns a list of content items; concat text items
             if result.content:
                 return " ".join(
                     item.text for item in result.content if hasattr(item, "text")
@@ -256,18 +254,21 @@ class AgentCore:
                 logger.error(f"Failed to connect to MCP server '{name}': {exc}")
 
     async def _build_tool_registry(self) -> None:
-        """Query each MCP session for its tools and build the Anthropic tool list."""
+        """Query each MCP session for its tools and build the OpenAI function-call tool list."""
         for name, session in self._mcp_sessions.items():
             try:
                 tools_result = await session.list_tools()
                 for tool in tools_result.tools:
                     self._tool_registry[tool.name] = session
-                    self._anthropic_tools.append({
-                        "name": tool.name,
-                        "description": tool.description or f"Tool: {tool.name}",
-                        "input_schema": tool.inputSchema or {
-                            "type": "object",
-                            "properties": {},
+                    self._openai_tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description or f"Tool: {tool.name}",
+                            "parameters": tool.inputSchema or {
+                                "type": "object",
+                                "properties": {},
+                            },
                         },
                     })
                 logger.info(f"Registered {len(tools_result.tools)} tools from '{name}'")
@@ -299,7 +300,7 @@ class AgentCore:
                 if doc.exists:
                     data = doc.to_dict()
                     messages = data.get("messages", [])
-                    return messages[-max_turns * 2:]  # keep last N turn pairs
+                    return messages[-max_turns * 2:]
             except Exception as exc:
                 logger.error(f"Firestore load failed: {exc}")
         else:
@@ -316,9 +317,6 @@ class AgentCore:
         assistant_reply: str,
     ) -> None:
         """Persist the updated conversation history."""
-        # Build the new messages to append
-        # Simplify media content blocks to text for storage
-        stored_user_content: list[dict] | str
         text_parts = [b["text"] for b in user_content if b.get("type") == "text"]
         stored_user_content = " ".join(text_parts) if text_parts else "[media message]"
 
@@ -326,7 +324,6 @@ class AgentCore:
             {"role": "user", "content": stored_user_content},
             {"role": "assistant", "content": assistant_reply},
         ]
-        # Trim to last N turns
         max_turns = settings.max_conversation_turns
         new_messages = new_messages[-(max_turns * 2):]
 
@@ -344,19 +341,6 @@ class AgentCore:
                 logger.error(f"Firestore save failed: {exc}")
         else:
             self._in_memory_history[user_id] = new_messages
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_text(content_blocks: list) -> str:
-        """Join all text blocks from a response content list."""
-        return "\n".join(
-            block.text
-            for block in content_blocks
-            if hasattr(block, "type") and block.type == "text"
-        ).strip()
 
 
 def firestore_server_timestamp():
